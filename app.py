@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from kalshi_signal_upgrade import indicators
 # Railway BTC collector connection
 RAILWAY_URL = "https://web-production-5676b.up.railway.app"
 
@@ -161,6 +162,48 @@ with history:
 with signals:
     st.header("BTC 10-Second Trade Signals")
     st.caption("Read-only research | Manual trading only")
+
+    st.subheader("Seven-Indicator Analysis")
+
+    try:
+        signal_candles = spot_history(4)
+
+        current_minute = pd.Timestamp.now(tz="UTC").floor("min")
+        signal_candles = signal_candles[
+            signal_candles["time"] < current_minute
+        ]
+
+        analysis = indicators(signal_candles)
+
+        if analysis is None:
+            st.warning("Not enough valid candle data.")
+        else:
+            st.metric("Bullish Indicators", f"{analysis['up']}/7")
+            st.metric("Bearish Indicators", f"{analysis['down']}/7")
+
+            st.dataframe(
+                pd.DataFrame([
+                    {
+                        "Indicator": name,
+                        "Direction": (
+                            "BULLISH" if vote == 1
+                            else "BEARISH" if vote == -1
+                            else "NEUTRAL"
+                        )
+                    }
+                    for name, vote in analysis["votes"].items()
+                ]),
+                hide_index=True,
+                use_container_width=True
+            )
+
+            st.write(
+                "Volume ratio:",
+                round(analysis["volume_ratio"], 2)
+            )
+
+    except Exception as exc:
+        st.error(f"Indicator calculation failed: {exc}")
 
     
     data = railway_data("summary")
