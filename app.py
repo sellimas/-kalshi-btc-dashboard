@@ -249,6 +249,62 @@ with signals:
             "volatility and fee-adjusted EV checks."
         )
 
+    st.subheader("Live Kalshi Contract")
+
+    try:
+        live_markets = markets()
+        eligible = []
+
+        for market in live_markets:
+            remaining = seconds_left(market)
+            strike = extract_strike(market)
+
+            if remaining is None or strike is None:
+                continue
+
+            if 180 <= remaining <= 300:
+                eligible.append((market, remaining, strike))
+
+        if not eligible:
+            st.info("No contract currently in the 3–5 minute entry window.")
+
+        else:
+            market, remaining, strike = min(
+                eligible,
+                key=lambda item: item[1]
+            )
+
+            yes_price = ask(market, "YES")
+            no_price = ask(market, "NO")
+
+            st.write("Contract:", market.get("ticker"))
+            st.metric("Seconds Remaining", int(remaining))
+            st.metric("Target BTC Price", f"${strike:,.2f}")
+
+            st.write(
+                "YES Ask:",
+                f"${yes_price:.2f}" if yes_price is not None else "N/A"
+            )
+            st.write(
+                "NO Ask:",
+                f"${no_price:.2f}" if no_price is not None else "N/A"
+            )
+
+            if direction:
+                selected_price = (
+                    yes_price if direction == "YES" else no_price
+                )
+
+                if selected_price is None:
+                    st.warning("Selected contract price unavailable.")
+                elif selected_price > 0.70:
+                    st.warning("Contract exceeds $0.70 price limit.")
+                else:
+                    st.success("Price and entry-window checks passed.")
+
+    except Exception as exc:
+        st.error(f"Kalshi contract check failed: {exc}")
+
 
     st.subheader("Entry Requirements")
 
