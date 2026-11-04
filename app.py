@@ -156,3 +156,32 @@ with history:
     else:
         st.info('A credible historical P/L backtest requires recorded historical contract quotes and outcomes. No historical profitability is claimed without those observations.')
     st.markdown('**Research protocol:** Capture ask quotes at a fixed cadence, record the model probability *as it was at the time*, and append the official settlement outcome after expiration. Evaluate out-of-sample periods, probability calibration, fill assumptions and sensitivity to fees. Do not calculate signals from future candles.')
+
+
+with signals:
+    st.header("BTC 10-Second Trade Signals")
+    st.caption("Read-only research | Manual trading only")
+
+    st.info(
+        "Signal engine setup in progress. "
+        "Railway market data will power this scanner."
+    )
+
+    a, b, c = st.columns(3)
+
+    a.metric("Trade Signal", "NO TRADE")
+    b.metric("Indicator Agreement", "Pending")
+    c.metric("Entry Window", "3–5 minutes")
+
+    st.subheader("Entry Requirements")
+
+    st.write("Minimum indicator agreement: 5 of 7")
+    st.write("Maximum contract price: $0.70")
+    st.write("Required time remaining: 180–300 seconds")
+    st.write("Data refresh target: 10 seconds")
+
+    st.warning(
+        "Signals remain disabled until market data, "
+        "indicators, and fee-adjusted expected value "
+        "are verified."
+    )
