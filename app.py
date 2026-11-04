@@ -222,11 +222,33 @@ with signals:
         )
 
 
+    # Display the seven-indicator agreement
+    bullish = analysis["up"] if analysis is not None else 0
+    bearish = analysis["down"] if analysis is not None else 0
+
+    if bullish >= 5:
+        direction = "YES"
+        agreement = f"{bullish}/7 BULLISH"
+    elif bearish >= 5:
+        direction = "NO"
+        agreement = f"{bearish}/7 BEARISH"
+    else:
+        direction = None
+        agreement = "INSUFFICIENT"
+
     a, b, c = st.columns(3)
 
     a.metric("Trade Signal", "NO TRADE")
-    b.metric("Indicator Agreement", "Pending")
+    b.metric("Indicator Agreement", agreement)
     c.metric("Entry Window", "3–5 minutes")
+
+    if direction:
+        st.info(
+            f"Indicator direction: {direction}. "
+            "Awaiting market price, time-window, "
+            "volatility and fee-adjusted EV checks."
+        )
+
 
     st.subheader("Entry Requirements")
 
