@@ -96,7 +96,7 @@ with st.sidebar:
     fee=st.number_input('Assumed all-in fees/slippage per contract ($)',min_value=0.,max_value=.50,value=.02,step=.01)
     st.caption('Confirm Kalshi’s current contract-specific fee schedule. This input is an assumption.')
 
-live,history=st.tabs(['Live signal scanner','Historical research / backtest'])
+live,history,signals=st.tabs(['Live signal scanner','Historical research / backtest','10-Second Trade Signals'])
 with live:
     try:
         candles=spot_history(8)
