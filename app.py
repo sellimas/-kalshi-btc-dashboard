@@ -162,10 +162,22 @@ with signals:
     st.header("BTC 10-Second Trade Signals")
     st.caption("Read-only research | Manual trading only")
 
-    st.info(
-        "Signal engine setup in progress. "
-        "Railway market data will power this scanner."
-    )
+    
+    data = railway_data("summary")
+
+    if data is None:
+        st.error("Railway connection unavailable.")
+    else:
+        st.success("Connected to Railway collector")
+        st.metric(
+            "Recorded Observations",
+            data.get("observations", 0)
+        )
+        st.metric(
+            "Settled Markets",
+            data.get("settled_markets", 0)
+        )
+
 
     a, b, c = st.columns(3)
 
