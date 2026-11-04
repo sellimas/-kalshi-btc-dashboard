@@ -4,7 +4,24 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+# Railway BTC collector connection
+RAILWAY_URL = "https://web-production-5676b.up.railway.app"
 
+def railway_data(endpoint):
+    token = st.secrets.get("RAILWAY_READ_TOKEN", "")
+    if not token:
+        return None
+
+    try:
+        response = requests.get(
+            f"{RAILWAY_URL}/{endpoint}",
+            headers={"x-read-token": token},
+            timeout=10
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException:
+        return None
 API='https://api.elections.kalshi.com/trade-api/v2'
 SERIES='KXBTC15M'
 S=requests.Session(); S.headers.update({'User-Agent':'KalshiBTCResearchDashboard/1.0'})
