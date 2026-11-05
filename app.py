@@ -253,6 +253,19 @@ with signals:
 
     try:
         live_markets = markets()
+
+        st.write("Open markets returned:", len(live_markets))
+
+        for m in live_markets[:5]:
+            st.write({
+                "ticker": m.get("ticker"),
+                "close_time": m.get("close_time"),
+                "expiration_time": m.get("expiration_time"),
+                "seconds_left": seconds_left(m),
+                "strike": extract_strike(m)
+            })
+
+        
         eligible = []
 
         for market in live_markets:
