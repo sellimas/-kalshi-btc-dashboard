@@ -94,9 +94,10 @@ def probability_up(spot,strike,seconds,sigma):
     z=math.log(spot/strike)/(sigma*math.sqrt(max(seconds/60,0.05)))
     return normal_cdf(z)
 
-def fee_estimate(price,contracts=1):
-    # Default illustrative fee only; actual fee schedule can differ.
-    return 0.0
+def fee_estimate(price, contracts=1):
+    # Conservative user-adjustable cost assumption.
+    return fee * contracts
+
 
 st.set_page_config(page_title='Kalshi BTC 15m Research',layout='wide')
 st.title('BTC 15-minute | Kalshi Research Dashboard')
@@ -252,11 +253,20 @@ with signals:
         direction = None
         agreement = "INSUFFICIENT"
 
-    a, b, c = st.columns(3)
 
-    a.metric("Trade Signal", "NO TRADE")
-    b.metric("Indicator Agreement", agreement)
-    c.metric("Entry Window", "3–5 minutes")
+# Preliminary indicator status only
+if direction == "YES":
+    signal_status = "YES BIAS"
+elif direction == "NO":
+    signal_status = "NO BIAS"
+else:
+    signal_status = "NO TRADE"
+
+a, b, c = st.columns(3)
+
+a.metric("Indicator Bias", signal_status)
+b.metric("Indicator Agreement", agreement)
+c.metric("Entry Window", "3–5 minutes")
 
     if direction:
         st.info(
