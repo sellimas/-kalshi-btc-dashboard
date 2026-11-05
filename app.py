@@ -173,7 +173,7 @@ with history:
 
 with signals:
     st_autorefresh(
-        interval=10_000,
+        interval=2_000,
         limit=None,
         key="btc_signal_refresh"
     )    
@@ -349,7 +349,7 @@ if direction:
     st.write("Minimum indicator agreement: 5 of 7")
     st.write("Maximum contract price: $0.70")
     st.write("Required time remaining: 180–300 seconds")
-    st.write("Data refresh target: 10 seconds")
+    st.write("Data refresh target: 2 seconds")
 
     st.warning(
         "Signals remain disabled until market data, "
