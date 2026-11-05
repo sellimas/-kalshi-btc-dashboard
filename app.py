@@ -633,3 +633,25 @@ try:
 
 except Exception as exc:
     st.error(f"Volatility distance calculation failed: {exc}")
+
+
+
+st.divider()
+st.subheader("Final BTC Trade Signal")
+
+# Safety default: never approve an unverified trade.
+st.error("NO TRADE")
+
+st.write("Required checks:")
+st.write("1. Indicator agreement: 5 of 7 minimum")
+st.write("2. Time remaining: 180–300 seconds")
+st.write("3. Contract ask: $0.70 maximum")
+st.write("4. Volatility: pending validation")
+st.write("5. Settlement distance: pending validation")
+st.write("6. Probability calibration: pending validation")
+st.write("7. Fee-adjusted expected value: pending validation")
+
+st.caption(
+    "Signals remain disabled until every required "
+    "check is verified using current market data."
+)
