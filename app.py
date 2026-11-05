@@ -268,16 +268,16 @@ a.metric("Indicator Bias", signal_status)
 b.metric("Indicator Agreement", agreement)
 c.metric("Entry Window", "3–5 minutes")
 
-    if direction:
-        st.info(
-            f"Indicator direction: {direction}. "
-            "Awaiting market price, time-window, "
-            "volatility and fee-adjusted EV checks."
-        )
+if direction:
+    st.info(
+        f"Indicator direction: {direction}. "
+        "Awaiting market price, time-window, "
+        "volatility and fee-adjusted EV checks."
+    )
 
-    st.subheader("Live Kalshi Contract")
+st.subheader("Live Kalshi Contract")
 
-    try:
+try:
         live_markets = markets()
 
         st.write("Open markets returned:", len(live_markets))
