@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 from kalshi_signal_upgrade import indicators
 # Railway BTC collector connection
 RAILWAY_URL = "https://web-production-5676b.up.railway.app"
@@ -170,6 +171,11 @@ with history:
 
 
 with signals:
+    st_autorefresh(
+        interval=10_000,
+        limit=None,
+        key="btc_signal_refresh"
+    )    
     st.header("BTC 10-Second Trade Signals")
     st.caption("Read-only research | Manual trading only")
 
