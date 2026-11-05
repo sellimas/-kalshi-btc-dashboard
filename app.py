@@ -275,7 +275,7 @@ if direction:
         "volatility and fee-adjusted EV checks."
     )
 
-st.subheader("Live Kalshi Contract")
+    st.subheader("Live Kalshi Contract")
 
     try:
         live_markets = markets()
