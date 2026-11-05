@@ -64,12 +64,22 @@ def extract_strike(m):
             return float(m[key])
     return None
 
+
 def seconds_left(m):
-    for key in ('close_time','expiration_time'):
-        if m.get(key):
-            try:return max(0,(datetime.fromisoformat(m[key].replace('Z','+00:00'))-datetime.now(timezone.utc)).total_seconds())
-            except ValueError:pass
-    return None
+    close_time = m.get("close_time")
+
+    if not close_time:
+        return None
+
+    try:
+        close = datetime.fromisoformat(
+            close_time.replace("Z", "+00:00")
+        )
+        now = datetime.now(timezone.utc)
+        return max(0, (close - now).total_seconds())
+    except (ValueError, TypeError):
+        return None
+
 
 def vol_per_min(df):
     r=np.log(df.close.astype(float)).diff().dropna()
