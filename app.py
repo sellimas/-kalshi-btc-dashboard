@@ -31,6 +31,7 @@ S=requests.Session(); S.headers.update({'User-Agent':'KalshiBTCResearchDashboard
 def get(url,params=None):
     r=S.get(url,params=params,timeout=15); r.raise_for_status(); return r.json()
 
+@st.cache_data(ttl=2, show_spinner=False)
 def spot_history(hours=24):
     # Coinbase exchange candles are OHLCV observations, not Kalshi's settlement index.
     end=datetime.now(timezone.utc); start=end-timedelta(hours=hours)
@@ -44,6 +45,7 @@ def spot_history(hours=24):
     df['time']=pd.to_datetime(df.ts,unit='s',utc=True)
     return df.reset_index(drop=True)
 
+@st.cache_data(ttl=2, show_spinner=False)
 def markets(status='open',limit=200):
     data=get(API+'/markets',{'series_ticker':SERIES,'status':status,'limit':limit})
     return data.get('markets',[])
@@ -105,11 +107,14 @@ st.caption('Read-only research • Coinbase BTC/USD is NOT the CF Benchmarks set
 with st.sidebar:
     st.header('Settings')
     refresh=st.button('Refresh market data')
+    if refresh:
+        spot_history.clear()
+        markets.clear()
     min_edge=st.slider('Minimum estimated edge (percentage points)',1,25,8)
     fee=st.number_input('Assumed all-in fees/slippage per contract ($)',min_value=0.,max_value=.50,value=.02,step=.01)
     st.caption('Confirm Kalshi’s current contract-specific fee schedule. This input is an assumption.')
 
-live,history,signals=st.tabs(['Live signal scanner','Historical research / backtest','10-Second Trade Signals'])
+live,history,signals=st.tabs(['Live signal scanner','Historical research / backtest','2-Second Signal Monitor'])
 with live:
     try:
         candles=spot_history(8)
@@ -182,7 +187,7 @@ with signals:
         limit=None,
         key="btc_signal_refresh"
     )    
-    st.header("BTC 10-Second Trade Signals")
+    st.header("BTC 2-Second Signal Monitor")
     st.caption("Read-only research | Manual trading only")
 
     st.subheader("Seven-Indicator Analysis")
@@ -363,282 +368,201 @@ if direction:
     )
 
 
+# ---------------- Four-stage research validation ----------------
+# All stages fail closed when source quality or calibration is unverified.
 st.divider()
-st.header("Final Trade Signal")
+st.header("Final Trade Signal — Research Checks")
 
-# Research-only decision checks
 required_agreement = 5
 maximum_price = 0.70
-minimum_seconds = 180
-maximum_seconds = 300
+minimum_seconds, maximum_seconds = 180, 300
+bias = direction
+agreement_count = bullish if bias == "YES" else bearish if bias == "NO" else 0
+indicator_pass = bias in ("YES", "NO") and agreement_count >= required_agreement
 
-bias = globals().get("direction")
-bullish_count = globals().get("bullish", 0)
-bearish_count = globals().get("bearish", 0)
-
-agreement_count = (
-    bullish_count if bias == "YES"
-    else bearish_count if bias == "NO"
-    else 0
-)
-
-indicator_pass = (
-    bias in ("YES", "NO")
-    and agreement_count >= required_agreement
-)
-
-st.write(
-    "Indicator agreement:",
-    f"{agreement_count}/7",
-    "PASS" if indicator_pass else "FAIL"
-)
-
-# Never reuse stale market values
-contract = None
-seconds_remaining = None
-contract_price = None
-strike_price = None
-
+# The same 2-second cached observations are reused across the screen.
+validation_candles = pd.DataFrame()
+validation_markets = []
+market_error = None
 try:
-    current_markets = markets()
-
-    for candidate in current_markets:
-        remaining = seconds_left(candidate)
-        strike = extract_strike(candidate)
-
-        if remaining is None or strike is None:
-            continue
-
-        if minimum_seconds <= remaining <= maximum_seconds:
-            contract = candidate
-            seconds_remaining = remaining
-            strike_price = strike
-            break
-
-    if contract is not None and bias in ("YES", "NO"):
-        contract_price = ask(contract, bias)
-
+    validation_candles = spot_history(4)
+    validation_markets = markets()
 except Exception as exc:
-    st.error(f"Market check unavailable: {exc}")
+    market_error = str(exc)
 
-time_pass = seconds_remaining is not None
+# Exclude the unfinished minute when estimating volatility.
+completed = pd.DataFrame()
+if not validation_candles.empty:
+    cutoff = pd.Timestamp.now(tz="UTC").floor("min")
+    completed = validation_candles[validation_candles["time"] < cutoff].copy()
+    completed = completed.sort_values("time").drop_duplicates("time")
 
-price_pass = (
-    contract_price is not None
-    and 0 < contract_price <= maximum_price
-)
+spot = float(completed["close"].iloc[-1]) if not completed.empty else None
+sigma = vol_per_min(completed) if len(completed) >= 30 else None
+if sigma is not None and not np.isfinite(sigma):
+    sigma = None
 
-st.write(
-    "Entry window:",
-    "PASS" if time_pass else "FAIL"
-)
+valid_contracts = []
+for candidate in validation_markets:
+    remaining = seconds_left(candidate)
+    target = extract_strike(candidate)
+    if remaining is not None and remaining > 0 and target is not None and target > 0:
+        valid_contracts.append((candidate, remaining, target))
 
-st.write(
-    "Contract price:",
-    "PASS" if price_pass else "FAIL"
-)
+# Show the nearest expiry for monitoring, even before the entry window.
+monitor = min(valid_contracts, key=lambda x: x[1]) if valid_contracts else None
+eligible = [x for x in valid_contracts if minimum_seconds <= x[1] <= maximum_seconds]
+chosen = min(eligible, key=lambda x: x[1]) if eligible else None
+contract, seconds_remaining, strike_price = chosen if chosen else (None, None, None)
+contract_price = ask(contract, bias) if contract is not None and bias in ("YES", "NO") else None
+time_pass = chosen is not None
+price_pass = contract_price is not None and 0 < contract_price <= maximum_price
 
-if contract_price is not None:
-    st.write(f"Selected ask: ${contract_price:.2f}")
+st.write("Indicator agreement:", f"{agreement_count}/7", "PASS" if indicator_pass else "FAIL")
+st.write("Entry window:", "PASS" if time_pass else "WAITING")
+st.write("Contract ask:", f"${contract_price:.2f}" if contract_price is not None else "UNAVAILABLE",
+         "PASS" if price_pass else "NOT PASSED")
+if market_error:
+    st.error(f"Market data unavailable: {market_error}")
 
-# These checks still require validation
-volatility_verified = False
-settlement_distance_verified = False
-probability_verified = False
-fee_adjusted_ev_verified = False
-
-st.write("Volatility validation: PENDING")
-st.write("Settlement distance: PENDING")
-st.write("Probability calibration: PENDING")
-st.write("Fee-adjusted EV: PENDING")
-
-all_checks_pass = all([
-    indicator_pass,
-    time_pass,
-    price_pass,
-    volatility_verified,
-    settlement_distance_verified,
-    probability_verified,
-    fee_adjusted_ev_verified,
-])
-
-if all_checks_pass:
-    st.success(f"All checks passed: {bias}")
+# 1 — Volatility screening. The thresholds are provisional, not validated.
+st.subheader("1. Volatility Screening")
+volatility_screen_pass = False
+if sigma is None:
+    st.warning("PENDING — Insufficient completed 1-minute candles.")
 else:
-    st.warning("NO TRADE — All entry checks not yet verified")
+    vol_pct = sigma * 100
+    volatility_screen_pass = 0.01 <= vol_pct <= 0.15
+    st.metric("1-minute return volatility", f"{vol_pct:.4f}%")
+    st.write("Provisional 0.01%–0.15% screen:", "PASS" if volatility_screen_pass else "OUTSIDE RANGE")
+st.caption("This range is an illustrative filter, not a backtested or independently verified risk threshold.")
 
+# 2 — Distance from the target, expressed in units of estimated 1-sigma movement.
+# Coinbase spot is only a proxy; it does not validate the official settlement index.
+st.subheader("2. Settlement Distance Analysis")
+distance_screen_pass = False
+proxy_distance = None
+expected_move = None
+if monitor is not None and spot is not None and sigma is not None and sigma > 0:
+    m, remaining, target = monitor
+    proxy_distance = spot - target
+    expected_move = spot * sigma * math.sqrt(remaining / 60)
+    distance_ratio = abs(proxy_distance) / expected_move if expected_move > 0 else None
+    st.write("Monitored contract:", m.get("ticker"))
+    st.metric("Seconds remaining", int(remaining))
+    st.metric("Coinbase BTC/USD (completed candle)", f"${spot:,.2f}")
+    st.metric("Kalshi target", f"${target:,.2f}")
+    st.metric("Coinbase-to-target distance", f"${proxy_distance:+,.2f}")
+    st.metric("Illustrative 1-sigma move", f"${expected_move:,.2f}")
+    if distance_ratio is not None:
+        st.metric("Absolute distance / expected move", f"{distance_ratio:.2f}x")
+    if remaining > maximum_seconds:
+        st.info(f"Entry window opens in approximately {int(remaining - maximum_seconds)} seconds.")
+    elif remaining < minimum_seconds:
+        st.info("Entry window has closed for this contract.")
+    else:
+        st.info("Entry window is open; further validation is required.")
+else:
+    st.warning("PENDING — No complete price, target, countdown, and volatility observation.")
+st.warning("UNVERIFIED — Coinbase BTC/USD is not the official Kalshi settlement benchmark. "
+           "The distance screen cannot be certified from Coinbase data alone.")
 
+# 3 — Out-of-sample empirical calibration from real prediction/outcome rows.
+# Data must be independent of the data used to fit the forecasting model.
+st.subheader("3. Historical Probability Calibration")
+st.caption("Optional CSV columns: timestamp,ticker,side,model_probability,won. "
+           "One independent settled prediction per market; 1=won, 0=lost. "
+           "Upload predictions recorded before settlement, not reconstructed afterwards.")
+calibration_upload = st.file_uploader("Upload out-of-sample calibration CSV", type="csv", key="calibration_csv")
+calibration_valid = False
+calibration_df = None
+calibration_brier = None
+if calibration_upload is not None:
+    try:
+        cal = pd.read_csv(calibration_upload)
+        fields = {"timestamp", "ticker", "side", "model_probability", "won"}
+        if not fields.issubset(cal.columns):
+            raise ValueError("Missing: " + ", ".join(sorted(fields - set(cal.columns))))
+        cal["timestamp"] = pd.to_datetime(cal["timestamp"], utc=True, errors="raise")
+        cal["model_probability"] = pd.to_numeric(cal["model_probability"], errors="raise")
+        cal["won"] = pd.to_numeric(cal["won"], errors="raise")
+        cal = cal.dropna(subset=["timestamp", "ticker", "side", "model_probability", "won"])
+        cal = cal[cal["model_probability"].between(0, 1) & cal["won"].isin([0, 1])]
+        # One settled observation per market, not YES and NO duplicates.
+        cal = cal.sort_values("timestamp").drop_duplicates("ticker", keep="first")
+        if len(cal) < 100:
+            st.warning(f"PENDING — {len(cal)} unique settled markets; at least 100 required for preliminary evaluation.")
+        else:
+            calibration_brier = float(np.mean((cal["model_probability"] - cal["won"]) ** 2))
+            base_rate = float(cal["won"].mean())
+            baseline_brier = float(np.mean((base_rate - cal["won"]) ** 2))
+            st.metric("Out-of-sample markets", len(cal))
+            st.metric("Brier score (lower is better)", f"{calibration_brier:.4f}")
+            st.metric("Constant-rate baseline Brier", f"{baseline_brier:.4f}")
+            calibration_valid = calibration_brier < baseline_brier
+            calibration_df = cal
+            st.write("Preliminary historical calibration test:",
+                     "PASS" if calibration_valid else "FAIL — model did not beat constant-rate baseline")
+            st.caption("This basic Brier comparison is not proof of calibration, stationarity, "
+                       "out-of-sample provenance, or a live trading edge.")
+    except Exception as exc:
+        st.error(f"Calibration CSV invalid: {exc}")
+else:
+    st.info("PENDING — Upload timestamped predictions and official settled outcomes to evaluate calibration.")
+
+# 4 — Illustrative expected value; only use calibrated empirical frequency
+# from sufficiently populated nearby probability bins for any decision assessment.
+st.subheader("4. Fee-Adjusted Expected Value")
+model_probability = None
+empirical_probability = None
+estimated_ev = None
+if chosen is not None and spot is not None and sigma is not None and sigma > 0 and bias is not None:
+    _, remaining, target = chosen
+    up = probability_up(spot, target, remaining, sigma)
+    if up is not None and np.isfinite(up):
+        model_probability = float(up if bias == "YES" else 1 - up)
+        st.metric("Illustrative model probability", f"{model_probability * 100:.1f}%")
+
+if model_probability is not None and calibration_valid and calibration_df is not None:
+    # Local empirical hit rate around the current forecast; avoids treating a
+    # global Brier pass as sufficient evidence for this specific probability.
+    nearby = calibration_df[
+        (calibration_df["model_probability"] - model_probability).abs() <= 0.10
+    ]
+    if len(nearby) >= 30:
+        empirical_probability = float(nearby["won"].mean())
+        st.write(f"Historical wins near this forecast: {len(nearby)} markets")
+        st.metric("Local empirical win frequency", f"{empirical_probability * 100:.1f}%")
+    else:
+        st.warning(f"PENDING — Only {len(nearby)} historical observations near this forecast; 30 required.")
+
+if empirical_probability is not None and contract_price is not None:
+    # $1 payout on a winning contract; price and friction are per contract.
+    estimated_ev = empirical_probability - contract_price - fee
+    st.metric("Illustrative net EV per contract", f"${estimated_ev:+.3f}")
+    st.write("Meets chosen minimum estimated edge:",
+             "YES" if estimated_ev >= min_edge / 100 else "NO")
+else:
+    st.info("PENDING — Needs an eligible live ask and sufficient historical calibration data.")
+st.caption("Assumed fee/slippage comes from the sidebar, not a verified Kalshi fee schedule. "
+           "The model omits settlement-index basis, late-window behavior, fills, and latency.")
 
 st.divider()
-st.subheader("BTC Distance & Volatility Monitor")
-
-try:
-    btc_candles = spot_history(4)
-
-    if btc_candles.empty:
-        st.warning("BTC price history unavailable.")
-    else:
-        btc_price = float(btc_candles["close"].iloc[-1])
-
-        returns = np.log(
-            btc_candles["close"].astype(float)
-        ).diff().dropna()
-
-        volatility = (
-            float(returns.tail(120).std())
-            if len(returns) >= 20
-            else None
-        )
-
-        st.metric(
-            "Current Coinbase BTC Price",
-            f"${btc_price:,.2f}"
-        )
-
-        if volatility is not None:
-            st.metric(
-                "1-Minute Return Volatility",
-                f"{volatility * 100:.4f}%"
-            )
-        else:
-            st.warning("Insufficient volatility data.")
-
-        # Monitor current contract at all times
-        monitor_markets = markets()
-        monitor_contracts = []
-
-        for m in monitor_markets:
-            remaining = seconds_left(m)
-            strike = extract_strike(m)
-
-            if (
-                remaining is not None
-                and remaining > 0
-                and strike is not None
-                and strike > 0
-            ):
-                monitor_contracts.append(
-                    (m, remaining, strike)
-                )
-
-        if monitor_contracts:
-            # Select contract closest to expiration
-            current, remaining, strike = min(
-                monitor_contracts,
-                key=lambda item: item[1]
-            )
-
-            distance = btc_price - strike
-            distance_pct = distance / strike * 100
-
-            st.write(
-                "Current contract:",
-                current.get("ticker")
-            )
-
-            st.metric(
-                "Seconds Remaining",
-                int(remaining)
-            )
-
-            st.metric(
-                "Distance From Target",
-                f"${distance:+,.2f}",
-                f"{distance_pct:+.3f}%"
-            )
-
-            if remaining > 300:
-                st.info(
-                    f"Entry window opens in "
-                    f"{int(remaining - 300)} seconds."
-                )
-            elif 180 <= remaining <= 300:
-                st.info(
-                    "ENTRY WINDOW OPEN — "
-                    "Additional checks still required."
-                )
-            else:
-                st.warning(
-                    "Entry window has closed."
-                )
-
-            st.caption(
-                "Distance uses Coinbase BTC/USD, "
-                "which may differ from the Kalshi "
-                "settlement benchmark."
-            )
-        else:
-            st.info("No active contract available.")
-
-except Exception as exc:
-    st.error(f"Distance monitor unavailable: {exc}")
-
-
-
-st.divider()
-st.subheader("Volatility-Adjusted BTC Distance")
-
-try:
-    if (
-        "btc_price" in globals()
-        and "strike" in globals()
-        and "remaining" in globals()
-        and "volatility" in globals()
-        and volatility is not None
-        and volatility > 0
-        and strike > 0
-        and remaining > 0
-    ):
-        # Approximate movement based on historical
-        # one-minute log-return volatility.
-        minutes_left = remaining / 60
-
-        expected_move = (
-            btc_price
-            * volatility
-            * np.sqrt(minutes_left)
-        )
-
-        distance = btc_price - strike
-
-        distance_ratio = (
-            abs(distance) / expected_move
-            if expected_move > 0
-            else None
-        )
-
-        st.metric(
-            "Estimated 1-Sigma BTC Move",
-            f"${expected_move:,.2f}"
-        )
-
-        st.metric(
-            "Distance / Estimated Move",
-            f"{distance_ratio:.2f}x"
-        )
-
-        if distance > 0:
-            st.write("BTC currently ABOVE target")
-        elif distance < 0:
-            st.write("BTC currently BELOW target")
-        else:
-            st.write("BTC currently AT target")
-
-        st.caption(
-            "1-sigma movement is an illustrative "
-            "volatility estimate, not a guaranteed "
-            "price range or settlement probability."
-        )
-
-    else:
-        st.info(
-            "Waiting for valid BTC price, target, "
-            "volatility and contract countdown data."
-        )
-
-except Exception as exc:
-    st.error(f"Volatility distance calculation failed: {exc}")
-
-
-
-
+st.subheader("Final BTC Research Status")
+# A genuine live settlement-index feed, externally validated calibration and
+# confirmed contract-specific fees are NOT supplied by this application.
+settlement_benchmark_verified = False
+live_probability_verified = False
+actual_fee_schedule_verified = False
+all_checks_pass = all([
+    indicator_pass, time_pass, price_pass, volatility_screen_pass,
+    distance_screen_pass, calibration_valid, live_probability_verified,
+    settlement_benchmark_verified, actual_fee_schedule_verified,
+    estimated_ev is not None and estimated_ev >= min_edge / 100,
+])
+if all_checks_pass:
+    st.success(f"Verified research conditions: {bias}")
+else:
+    st.error("NO TRADE — Essential checks are missing or unverified")
+st.caption("Research-only, manual trading. A provisional screen or uploaded backtest "
+           "cannot certify a live Kalshi settlement outcome or profitability.")
