@@ -356,3 +356,108 @@ if direction:
         "indicators, and fee-adjusted expected value "
         "are verified."
     )
+
+
+st.divider()
+st.header("Final Trade Signal")
+
+# Research-only decision checks
+required_agreement = 5
+maximum_price = 0.70
+minimum_seconds = 180
+maximum_seconds = 300
+
+bias = globals().get("direction")
+bullish_count = globals().get("bullish", 0)
+bearish_count = globals().get("bearish", 0)
+
+agreement_count = (
+    bullish_count if bias == "YES"
+    else bearish_count if bias == "NO"
+    else 0
+)
+
+indicator_pass = (
+    bias in ("YES", "NO")
+    and agreement_count >= required_agreement
+)
+
+st.write(
+    "Indicator agreement:",
+    f"{agreement_count}/7",
+    "PASS" if indicator_pass else "FAIL"
+)
+
+# Never reuse stale market values
+contract = None
+seconds_remaining = None
+contract_price = None
+strike_price = None
+
+try:
+    current_markets = markets()
+
+    for candidate in current_markets:
+        remaining = seconds_left(candidate)
+        strike = extract_strike(candidate)
+
+        if remaining is None or strike is None:
+            continue
+
+        if minimum_seconds <= remaining <= maximum_seconds:
+            contract = candidate
+            seconds_remaining = remaining
+            strike_price = strike
+            break
+
+    if contract is not None and bias in ("YES", "NO"):
+        contract_price = ask(contract, bias)
+
+except Exception as exc:
+    st.error(f"Market check unavailable: {exc}")
+
+time_pass = seconds_remaining is not None
+
+price_pass = (
+    contract_price is not None
+    and 0 < contract_price <= maximum_price
+)
+
+st.write(
+    "Entry window:",
+    "PASS" if time_pass else "FAIL"
+)
+
+st.write(
+    "Contract price:",
+    "PASS" if price_pass else "FAIL"
+)
+
+if contract_price is not None:
+    st.write(f"Selected ask: ${contract_price:.2f}")
+
+# These checks still require validation
+volatility_verified = False
+settlement_distance_verified = False
+probability_verified = False
+fee_adjusted_ev_verified = False
+
+st.write("Volatility validation: PENDING")
+st.write("Settlement distance: PENDING")
+st.write("Probability calibration: PENDING")
+st.write("Fee-adjusted EV: PENDING")
+
+all_checks_pass = all([
+    indicator_pass,
+    time_pass,
+    price_pass,
+    volatility_verified,
+    settlement_distance_verified,
+    probability_verified,
+    fee_adjusted_ev_verified,
+])
+
+if all_checks_pass:
+    st.success(f"All checks passed: {bias}")
+else:
+    st.warning("NO TRADE — All entry checks not yet verified")
