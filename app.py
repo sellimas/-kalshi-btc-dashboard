@@ -461,3 +461,55 @@ if all_checks_pass:
     st.success(f"All checks passed: {bias}")
 else:
     st.warning("NO TRADE — All entry checks not yet verified")
+
+
+
+st.divider()
+st.subheader("BTC Distance & Volatility Monitor")
+
+try:
+    btc_candles = spot_history(4)
+
+    if btc_candles.empty:
+        st.warning("BTC price history unavailable.")
+    else:
+        btc_price = float(btc_candles["close"].iloc[-1])
+
+        st.metric("Current Coinbase BTC Price", f"${btc_price:,.2f}")
+
+        if strike_price is not None:
+            distance = btc_price - strike_price
+            distance_pct = (distance / strike_price) * 100
+
+            st.metric(
+                "Distance From Target",
+                f"${distance:+,.2f}",
+                f"{distance_pct:+.3f}%"
+            )
+
+            returns = np.log(
+                btc_candles["close"].astype(float)
+            ).diff().dropna()
+
+            if len(returns) >= 20:
+                volatility = float(returns.tail(120).std())
+
+                st.metric(
+                    "1-Minute Return Volatility",
+                    f"{volatility * 100:.4f}%"
+                )
+
+                st.caption(
+                    "Historical Coinbase volatility, not "
+                    "a calibrated settlement probability."
+                )
+            else:
+                st.warning("Insufficient volatility data.")
+        else:
+            st.info(
+                "Waiting for an eligible Kalshi contract "
+                "to display target distance."
+            )
+
+except Exception as exc:
+    st.error(f"Distance monitor unavailable: {exc}")
