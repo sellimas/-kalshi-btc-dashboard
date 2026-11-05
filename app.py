@@ -24,7 +24,7 @@ def railway_data(endpoint):
         return response.json()
     except requests.RequestException:
         return None
-API='https://api.elections.kalshi.com/trade-api/v2'
+API='https://external-api.kalshi.com/trade-api/v2'
 SERIES='KXBTC15M'
 S=requests.Session(); S.headers.update({'User-Agent':'KalshiBTCResearchDashboard/1.0'})
 
@@ -119,7 +119,7 @@ with live:
     try:
         candles=spot_history(8)
         active=markets()
-        if candles.empty:st.warning('No Coinbase candles returned.'); st.stop()
+        if candles.empty: raise ValueError('No Coinbase candles returned.')
         spot=float(candles.close.iloc[-1]); sig=vol_per_min(candles)
         a,b,c=st.columns(3);a.metric('Coinbase BTC/USD',f'${spot:,.2f}');b.metric('1-min log-return volatility',f'{sig*100:.4f}%' if sig else 'N/A');c.metric('Open Kalshi series markets',len(active))
         st.line_chart(candles.set_index('time')['close'])
@@ -174,6 +174,49 @@ with history:
     else:
         st.info('A credible historical P/L backtest requires recorded historical contract quotes and outcomes. No historical profitability is claimed without those observations.')
     st.markdown('**Research protocol:** Capture ask quotes at a fixed cadence, record the model probability *as it was at the time*, and append the official settlement outcome after expiration. Evaluate out-of-sample periods, probability calibration, fill assumptions and sensitivity to fees. Do not calculate signals from future candles.')
+
+    st.divider()
+    st.subheader("Railway recorded market history")
+    st.caption("Reads actual collector observations and official Kalshi results. This is market-history research, NOT a backtest of your seven-indicator strategy, because past indicator predictions were not recorded.")
+    railway_history = railway_data("history?limit=2000")
+    if railway_history is None:
+        st.warning("Railway historical data unavailable. Verify the Railway read token and collector health.")
+    else:
+        recorded = pd.DataFrame(railway_history.get("observations", []))
+        if recorded.empty:
+            st.info("No observations recorded yet.")
+        else:
+            recorded["timestamp"] = pd.to_datetime(recorded["ts"], unit="s", utc=True, errors="coerce")
+            for field in ("seconds_left", "target", "btc_proxy", "yes_ask", "no_ask"):
+                recorded[field] = pd.to_numeric(recorded.get(field), errors="coerce")
+            recorded["result"] = recorded.get("result", pd.Series(index=recorded.index, dtype="object")).astype("string").str.lower()
+            recorded["yes_ask_dollars"] = recorded["yes_ask"] / 100
+            recorded["no_ask_dollars"] = recorded["no_ask"] / 100
+            in_window = recorded[recorded["seconds_left"].between(180, 300)].copy()
+            settled = in_window[in_window["result"].isin(["yes", "no"])].copy()
+            # One historical snapshot per market, closest to 240 seconds remaining.
+            if not settled.empty:
+                settled["distance_from_240"] = (settled["seconds_left"] - 240).abs()
+                settled = settled.sort_values(["distance_from_240", "timestamp"]).drop_duplicates("ticker")
+            h1, h2, h3 = st.columns(3)
+            h1.metric("Downloaded observations", len(recorded))
+            h2.metric("Markets observed in entry window", in_window["ticker"].nunique())
+            h3.metric("Settled markets in window", settled["ticker"].nunique() if not settled.empty else 0)
+            if not settled.empty:
+                settled["proxy_above_target"] = settled["btc_proxy"] > settled["target"]
+                settled["proxy_direction_won"] = np.where(
+                    settled["proxy_above_target"], settled["result"].eq("yes"), settled["result"].eq("no")
+                )
+                valid_proxy = settled.dropna(subset=["btc_proxy", "target"])
+                if not valid_proxy.empty:
+                    st.metric("Proxy direction matched settlement", f"{valid_proxy['proxy_direction_won'].mean()*100:.1f}%")
+                    st.caption("Descriptive proxy comparison only; not an executable strategy, verified model forecast, or profitability estimate. Kraken spot differs from the official settlement benchmark.")
+                show_cols = ["timestamp", "ticker", "seconds_left", "target", "btc_proxy", "yes_ask_dollars", "no_ask_dollars", "result"]
+                st.dataframe(settled[show_cols].sort_values("timestamp", ascending=False), hide_index=True, use_container_width=True)
+                st.download_button("Download settled Railway market snapshots", settled[show_cols].to_csv(index=False), "railway_settled_snapshots.csv", "text/csv", key="railway_settled_download")
+            else:
+                st.info("No settled markets with recorded 3–5-minute snapshots in the latest 2,000 observations. The collector history endpoint is limited to its most recent records.")
+
 
 
 with signals:
