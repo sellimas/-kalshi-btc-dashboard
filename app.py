@@ -475,11 +475,66 @@ try:
     else:
         btc_price = float(btc_candles["close"].iloc[-1])
 
-        st.metric("Current Coinbase BTC Price", f"${btc_price:,.2f}")
+        returns = np.log(
+            btc_candles["close"].astype(float)
+        ).diff().dropna()
 
-        if strike_price is not None:
-            distance = btc_price - strike_price
-            distance_pct = (distance / strike_price) * 100
+        volatility = (
+            float(returns.tail(120).std())
+            if len(returns) >= 20
+            else None
+        )
+
+        st.metric(
+            "Current Coinbase BTC Price",
+            f"${btc_price:,.2f}"
+        )
+
+        if volatility is not None:
+            st.metric(
+                "1-Minute Return Volatility",
+                f"{volatility * 100:.4f}%"
+            )
+        else:
+            st.warning("Insufficient volatility data.")
+
+        # Monitor current contract at all times
+        monitor_markets = markets()
+        monitor_contracts = []
+
+        for m in monitor_markets:
+            remaining = seconds_left(m)
+            strike = extract_strike(m)
+
+            if (
+                remaining is not None
+                and remaining > 0
+                and strike is not None
+                and strike > 0
+            ):
+                monitor_contracts.append(
+                    (m, remaining, strike)
+                )
+
+        if monitor_contracts:
+            # Select contract closest to expiration
+            current, remaining, strike = min(
+                monitor_contracts,
+                key=lambda item: item[1]
+            )
+
+            distance = btc_price - strike
+            distance_pct = distance / strike * 100
+
+            st.write(
+                "Current contract:",
+                current.get("ticker")
+            )
+
+            st.metric(
+                "Seconds Remaining",
+                int(remaining)
+            )
 
             st.metric(
                 "Distance From Target",
@@ -487,29 +542,28 @@ try:
                 f"{distance_pct:+.3f}%"
             )
 
-            returns = np.log(
-                btc_candles["close"].astype(float)
-            ).diff().dropna()
-
-            if len(returns) >= 20:
-                volatility = float(returns.tail(120).std())
-
-                st.metric(
-                    "1-Minute Return Volatility",
-                    f"{volatility * 100:.4f}%"
+            if remaining > 300:
+                st.info(
+                    f"Entry window opens in "
+                    f"{int(remaining - 300)} seconds."
                 )
-
-                st.caption(
-                    "Historical Coinbase volatility, not "
-                    "a calibrated settlement probability."
+            elif 180 <= remaining <= 300:
+                st.info(
+                    "ENTRY WINDOW OPEN — "
+                    "Additional checks still required."
                 )
             else:
-                st.warning("Insufficient volatility data.")
-        else:
-            st.info(
-                "Waiting for an eligible Kalshi contract "
-                "to display target distance."
+                st.warning(
+                    "Entry window has closed."
+                )
+
+            st.caption(
+                "Distance uses Coinbase BTC/USD, "
+                "which may differ from the Kalshi "
+                "settlement benchmark."
             )
+        else:
+            st.info("No active contract available.")
 
 except Exception as exc:
     st.error(f"Distance monitor unavailable: {exc}")
