@@ -1,24 +1,26 @@
-import os, time, json, sqlite3, threading, logging, math
-from datetime import datetime, timezone
+import os, time, json, sqlite3, threading, logging
+from datetime import datetime
 from contextlib import asynccontextmanager
 import requests
 from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel, Field
+from typing import Literal
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logging.basicConfig(level=logging.INFO)
 BASE='https://external-api.kalshi.com/trade-api/v2'
 DB=os.getenv('DB_PATH','/data/kalshi.sqlite3')
 TOKEN=os.getenv('READ_TOKEN','')
+WRITE_TOKEN=os.getenv('WRITE_TOKEN','')
 INTERVAL=max(10,int(os.getenv('SAMPLE_SECONDS','10')))
-SESSION=requests.Session(); SESSION.headers.update({'User-Agent':'BTC15ResearchCollector/1.1'})
-lock=threading.Lock()
+SESSION=requests.Session(); SESSION.headers.update({'User-Agent':'BTC15ResearchCollector/1.2'})
 
-def get(url, params=None):
-    r=SESSION.get(url,params=params,timeout=8);r.raise_for_status();return r.json()
+def get(url,params=None):
+    r=SESSION.get(url,params=params,timeout=8); r.raise_for_status(); return r.json()
 
 def connect():
     os.makedirs(os.path.dirname(os.path.abspath(DB)),exist_ok=True)
     c=sqlite3.connect(DB,timeout=15)
-    c.execute('PRAGMA journal_mode=WAL');c.execute('PRAGMA busy_timeout=10000')
+    c.execute('PRAGMA journal_mode=WAL'); c.execute('PRAGMA busy_timeout=10000')
     return c
 
 def init():
@@ -27,11 +29,17 @@ def init():
         c.execute('CREATE TABLE IF NOT EXISTS outcomes (ticker TEXT PRIMARY KEY,result TEXT,status TEXT,checked_at INTEGER)')
         c.execute('CREATE TABLE IF NOT EXISTS heartbeats (ts INTEGER PRIMARY KEY,ok INTEGER,details TEXT)')
         c.execute('CREATE INDEX IF NOT EXISTS obs_ticker ON observations(ticker,ts)')
+        c.execute('''CREATE TABLE IF NOT EXISTS predictions (
+            ticker TEXT PRIMARY KEY, ts INTEGER NOT NULL, side TEXT NOT NULL,
+            agreement INTEGER NOT NULL, votes_json TEXT NOT NULL,
+            seconds_left REAL NOT NULL, target REAL NOT NULL, btc_proxy REAL NOT NULL,
+            ask REAL NOT NULL, fee REAL NOT NULL, sigma REAL,
+            model_probability REAL, source TEXT NOT NULL)''')
 
 def as_cents(x):
     try:
-        v=float(x);return round(v*100,4) if v<=1 else v
-    except (ValueError,TypeError):return None
+        v=float(x); return round(v*100,4) if v<=1 else v
+    except (ValueError,TypeError): return None
 
 def bid(book,side):
     levels=book.get(side+'_dollars') or book.get(side) or []
@@ -47,14 +55,13 @@ def target_of(m):
 
 def sample():
     now=time.time();stamp=int(now)
-    markets=get(BASE+'/markets',{'series_ticker':'KXBTC15M','status':'open','limit':100}).get('markets',[])
+    market_list=get(BASE+'/markets',{'series_ticker':'KXBTC15M','status':'open','limit':100}).get('markets',[])
     active=[]
-    for m in markets:
+    for m in market_list:
         try:
             left=datetime.fromisoformat(m['close_time'].replace('Z','+00:00')).timestamp()-now
             if 0<left<1000:active.append((left,m))
         except (ValueError,KeyError):continue
-    # Independent spot proxy, not the official settlement index.
     spot=None
     try:spot=float(get('https://api.kraken.com/0/public/Ticker',{'pair':'XBTUSD'})['result'].popitem()[1]['c'][0])
     except Exception as exc:logging.warning('Spot proxy unavailable: %s',exc)
@@ -74,9 +81,9 @@ def sample():
     return len(rows)
 
 def update_outcomes():
-    # Never infer winning side from proxy prices; use official Kalshi result only.
     with connect() as c:
-        tickers=[x[0] for x in c.execute("SELECT DISTINCT o.ticker FROM observations o LEFT JOIN outcomes r ON o.ticker=r.ticker WHERE r.result IS NULL LIMIT 120")]
+        tickers=[x[0] for x in c.execute('''SELECT ticker FROM (SELECT ticker FROM observations UNION SELECT ticker FROM predictions) t
+            LEFT JOIN outcomes r USING(ticker) WHERE r.result IS NULL LIMIT 120''')]
     for ticker in tickers:
         try:
             m=get(BASE+'/markets/'+ticker).get('market',{})
@@ -99,7 +106,7 @@ def loop():
             try:update_outcomes()
             except Exception:logging.exception('Outcome refresh failed')
             last_settle=time.monotonic()
-        time.sleep(max(0.2,INTERVAL-(time.monotonic()-started)))
+        time.sleep(max(.2,INTERVAL-(time.monotonic()-started)))
 
 @asynccontextmanager
 async def lifespan(app):
@@ -109,8 +116,52 @@ async def lifespan(app):
 
 app=FastAPI(title='Kalshi BTC Research Collector',lifespan=lifespan)
 
-def auth(x_read_token):
-    if not TOKEN or x_read_token!=TOKEN:raise HTTPException(401,'Invalid read token')
+def auth(token):
+    if not TOKEN or token!=TOKEN:raise HTTPException(401,'Invalid read token')
+
+def write_auth(token):
+    if not WRITE_TOKEN or token!=WRITE_TOKEN:raise HTTPException(401,'Invalid write token')
+
+class Prediction(BaseModel):
+    ticker:str=Field(min_length=5,max_length=100)
+    side:Literal['YES','NO']
+    agreement:int=Field(ge=5,le=7)
+    votes:dict[str,int]
+    seconds_left:float=Field(ge=180,le=300)
+    target:float=Field(gt=0)
+    btc_proxy:float=Field(gt=0)
+    ask:float=Field(gt=0,le=.70)
+    fee:float=Field(ge=0,le=.5)
+    sigma:float|None=None
+    model_probability:float|None=Field(default=None,ge=0,le=1)
+
+@app.post('/predictions')
+def record_prediction(p:Prediction,x_write_token:str|None=Header(default=None)):
+    write_auth(x_write_token)
+    if not p.ticker.startswith('KXBTC15M-'):
+        raise HTTPException(422,'Unexpected ticker series')
+    if len(p.votes)!=7 or any(v not in (-1,0,1) for v in p.votes.values()):
+        raise HTTPException(422,'Expected exactly seven indicator votes')
+    matching=sum(v==(1 if p.side=='YES' else -1) for v in p.votes.values())
+    if matching!=p.agreement:raise HTTPException(422,'Agreement does not match votes')
+    # One immutable first eligible snapshot per ticker; reruns cannot overwrite it.
+    with connect() as c:
+        cur=c.execute('''INSERT OR IGNORE INTO predictions
+          (ticker,ts,side,agreement,votes_json,seconds_left,target,btc_proxy,ask,fee,sigma,model_probability,source)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+          (p.ticker,int(time.time()),p.side,p.agreement,json.dumps(p.votes,sort_keys=True),p.seconds_left,
+           p.target,p.btc_proxy,p.ask,p.fee,p.sigma,p.model_probability,'Streamlit live indicator snapshot'))
+        return {'recorded':cur.rowcount==1,'ticker':p.ticker}
+
+@app.get('/predictions')
+def predictions(limit:int=1000,x_read_token:str|None=Header(default=None)):
+    auth(x_read_token)
+    with connect() as c:
+        c.row_factory=sqlite3.Row
+        rows=c.execute('''SELECT p.*,o.result,o.status FROM predictions p
+          LEFT JOIN outcomes o ON p.ticker=o.ticker ORDER BY p.ts DESC LIMIT ?''',
+          (max(1,min(limit,5000)),)).fetchall()
+    return {'predictions':[dict(row) for row in rows],'server_ts':int(time.time())}
 
 @app.get('/health')
 def health():
@@ -146,4 +197,6 @@ def summary(x_read_token:str|None=Header(default=None)):
         count=c.execute('SELECT COUNT(*) FROM observations').fetchone()[0]
         settled=c.execute("SELECT COUNT(*) FROM outcomes WHERE result IN ('yes','no')").fetchone()[0]
         first=c.execute('SELECT MIN(ts) FROM observations').fetchone()[0]
-    return {'observations':count,'settled_markets':settled,'first_observation_ts':first,'validated_strategy_win_rate':None}
+        predictions_count=c.execute('SELECT COUNT(*) FROM predictions').fetchone()[0]
+    return {'observations':count,'settled_markets':settled,'first_observation_ts':first,
+            'recorded_predictions':predictions_count,'validated_strategy_win_rate':None}
