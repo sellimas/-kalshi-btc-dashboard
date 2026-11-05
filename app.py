@@ -567,3 +567,69 @@ try:
 
 except Exception as exc:
     st.error(f"Distance monitor unavailable: {exc}")
+
+
+
+st.divider()
+st.subheader("Volatility-Adjusted BTC Distance")
+
+try:
+    if (
+        "btc_price" in globals()
+        and "strike" in globals()
+        and "remaining" in globals()
+        and "volatility" in globals()
+        and volatility is not None
+        and volatility > 0
+        and strike > 0
+        and remaining > 0
+    ):
+        # Approximate movement based on historical
+        # one-minute log-return volatility.
+        minutes_left = remaining / 60
+
+        expected_move = (
+            btc_price
+            * volatility
+            * np.sqrt(minutes_left)
+        )
+
+        distance = btc_price - strike
+
+        distance_ratio = (
+            abs(distance) / expected_move
+            if expected_move > 0
+            else None
+        )
+
+        st.metric(
+            "Estimated 1-Sigma BTC Move",
+            f"${expected_move:,.2f}"
+        )
+
+        st.metric(
+            "Distance / Estimated Move",
+            f"{distance_ratio:.2f}x"
+        )
+
+        if distance > 0:
+            st.write("BTC currently ABOVE target")
+        elif distance < 0:
+            st.write("BTC currently BELOW target")
+        else:
+            st.write("BTC currently AT target")
+
+        st.caption(
+            "1-sigma movement is an illustrative "
+            "volatility estimate, not a guaranteed "
+            "price range or settlement probability."
+        )
+
+    else:
+        st.info(
+            "Waiting for valid BTC price, target, "
+            "volatility and contract countdown data."
+        )
+
+except Exception as exc:
+    st.error(f"Volatility distance calculation failed: {exc}")
