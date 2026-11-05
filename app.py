@@ -277,7 +277,7 @@ if direction:
 
 st.subheader("Live Kalshi Contract")
 
-try:
+    try:
         live_markets = markets()
 
         st.write("Open markets returned:", len(live_markets))
@@ -340,7 +340,6 @@ try:
                     st.warning("Contract exceeds $0.70 price limit.")
                 else:
                     st.success("Price and entry-window checks passed.")
-
     except Exception as exc:
         st.error(f"Kalshi contract check failed: {exc}")
 
